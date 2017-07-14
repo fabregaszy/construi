@@ -1,8 +1,9 @@
-
 import compose.config.config as compose
 
 import os
 import yaml
+
+import os.path
 
 from collections import namedtuple
 
@@ -10,6 +11,11 @@ from collections import namedtuple
 def parse(working_dir, f):
     with open(os.path.join(working_dir, f), 'r') as config_file:
         return Config(yaml.safe_load(config_file), working_dir, f)
+
+
+class NoSuchTargetException(Exception):
+    def __init__(self, target):
+        self.target = target
 
 
 class Config(object):
@@ -21,10 +27,13 @@ class Config(object):
     def __getattr__(self, name):
         return self.yml[name]
 
+    @property
+    def project_name(self):
+        return os.path.basename(self.working_dir)
+
     def for_target(self, target):
         config_files = [
-            self.base_config(target),
-            self.target_config(target),
+            self.base_config(target), self.target_config(target),
             self.workspace_config(target)
         ]
 
@@ -35,17 +44,26 @@ class Config(object):
         construi = {
             'before': target_yml['before'] if 'before' in target_yml else [],
             'name': target,
-            'run': self.target_yml(target).get('run', [])
+            'run': self.target_yml(target).get('run', []),
+            'project_name': self.project_name
         }
 
         return TargetConfig(construi, compose.load(config_details))
 
-    def base_config(self, name):
+    def base_config(self, target):
         base_yml = dict(self.yml)
 
         delete(base_yml, 'default', 'targets')
 
-        return compose.ConfigFile(self.filename, {name: base_yml})
+        # If the target specified build and/or image remove it from base.
+        # IMO this behavior is more intuitive for construi than the default
+        # merging behavior of the compose v2 schema.
+        target_yml = self.target_yml(target)
+
+        if 'build' in target_yml or 'image' in target_yml:
+            delete(base_yml, 'build', 'image')
+
+        return self.create_config_file({target: base_yml})
 
     def target_config(self, target):
         target_yml = self.target_yml(target)
@@ -58,10 +76,13 @@ class Config(object):
 
         services[target] = target_yml
 
-        return compose.ConfigFile(self.filename, services)
+        return self.create_config_file(services)
 
     def target_yml(self, target):
-        yml = self.yml['targets'][target]
+        try:
+            yml = self.yml['targets'][target]
+        except KeyError:
+            raise NoSuchTargetException(target)
 
         if type(yml) is str:
             yml = {'run': [yml]}
@@ -81,16 +102,18 @@ class Config(object):
     def workspace_config(self, name):
         config = {
             'working_dir': self.working_dir,
-            'volumes': [
-                "%s:%s" % (self.working_dir, self.working_dir)
-            ]
+            'volumes': ["%s:%s" % (self.working_dir, self.working_dir)]
         }
 
-        return compose.ConfigFile(self.filename, {name: config})
+        return self.create_config_file({name: config})
+
+    def create_config_file(self, yml):
+        return compose.ConfigFile(self.filename,
+                                  {'version': '2',
+                                   'services': yml})
 
 
 class TargetConfig(namedtuple('_TargetConfig', 'construi compose')):
-
     @property
     def services(self):
         return self.compose.services

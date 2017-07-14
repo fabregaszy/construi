@@ -1,13 +1,17 @@
-from .config import parse
-from .target import RunContext
-from .target import Target
+from .config import parse, NoSuchTargetException
+from .target import BuildFailedException, RunContext, Target
 from .__version__ import __version__
 
 from argparse import ArgumentParser
 
+from compose.errors import OperationFailedError
+
+import construi.console as console
+
 import logging
 import os
 import sys
+import traceback
 
 
 def main():
@@ -23,7 +27,24 @@ def main():
 
     target = args.target or config.default
 
-    Target(config.for_target(target)).invoke(RunContext(config, args.dry_run))
+    try:
+        Target(config.for_target(target)).invoke(
+            RunContext(config, args.dry_run))
+    except BuildFailedException:
+        console.error("\nBuild Failed.\n")
+        sys.exit(1)
+    except NoSuchTargetException, e:
+        console.error("\nNo such target: {}\n".format(e.target))
+        sys.exit(1)
+    except OperationFailedError, e:
+        console.error("\nUnexpected Error: {}\n".format(e.msg))
+        traceback.print_exc()
+        sys.exit(1)
+    except KeyboardInterrupt:
+        console.warn("\nBuild Interrupted.")
+        sys.exit(1)
+
+    console.info("\nBuild Succeeded.\n")
 
 
 def setup_logging():

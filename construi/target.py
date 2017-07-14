@@ -1,4 +1,3 @@
-
 import construi.console as console
 
 from compose.project import Project
@@ -6,32 +5,22 @@ from compose.cli.docker_client import docker_client
 from compose.service import ConvergenceStrategy
 
 import dockerpty
-import random
 import sys
+import os
+import os.path
 
 
-def generate_build_id():
-    v = 'aeiou'
-    c = 'bdfghjklmnprstvw'
-
-    return ''.join([random.choice(v if i % 2 else c) for i in range(8)])
+class BuildFailedException(Exception):
+    def __init__(self):
+        pass
 
 
 class Target(object):
     def __init__(self, config):
         self.config = config
         self.project = Project.from_config(
-            "construi_%s" % Target.build_id(),
-            config.compose,
-            docker_client())
-
-    @classmethod
-    def build_id(cls):
-        try:
-            return cls._build_id
-        except AttributeError:
-            cls._build_id = generate_build_id()
-            return cls._build_id
+            "construi_%s" % self.config.construi['project_name'],
+            config.compose, docker_client(os.environ))
 
     @property
     def before(self):
@@ -55,9 +44,7 @@ class Target(object):
 
     @property
     def linked_services(self):
-        return [
-            s for s in self.project.service_names if s != self.name
-        ]
+        return [s for s in self.project.service_names if s != self.name]
 
     def invoke(self, run_ctx):
         console.progress("** Invoke %s" % self.name)
@@ -89,10 +76,6 @@ class Target(object):
 
             console.progress('Done.')
 
-        except KeyboardInterrupt:
-            console.warn("\nBuild Interrupted.")
-            sys.exit(1)
-
         finally:
             self.cleanup()
 
@@ -104,14 +87,13 @@ class Target(object):
             command=command,
             tty=False,
             stdin_open=True,
-            detach=False
-        )
+            detach=False)
 
         try:
             dockerpty.start(self.client, container.id, interactive=False)
 
             if container.wait() != 0:
-                console.error("\nBuild Failed.")
+                raise BuildFailedException()
                 sys.exit(1)
 
         finally:
@@ -124,6 +106,8 @@ class Target(object):
         console.progress('Pulling Images...')
         self.project.pull()
 
+        self.project.initialize()
+
     def start_linked_services(self):
         if self.linked_services:
             self.project.up(
@@ -135,6 +119,7 @@ class Target(object):
         console.progress('Cleaning up...')
         self.project.kill()
         self.project.remove_stopped(None, v=True)
+        self.project.networks.remove()
 
 
 class RunContext(object):
